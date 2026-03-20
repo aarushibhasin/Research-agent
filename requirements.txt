@@ -1,0 +1,12 @@
+langgraph
+langgraph-checkpoint-redis
+langchain
+langchain-openai
+langchain-community
+chromadb
+sentence-transformers
+redis
+datasets
+huggingface-hub
+python-dotenv
+langsmith

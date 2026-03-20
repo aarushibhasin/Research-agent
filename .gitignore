@@ -1,0 +1,7 @@
+.env
+.venv/
+.cache/
+__pycache__/
+chroma_data/
+metrics_log.jsonl
+memory/__pycache__/

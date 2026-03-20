@@ -1,0 +1,22 @@
+services:
+  redis:
+    # LangGraph's Redis checkpointer expects RedisJSON (`JSON.SET`).
+    # `redis:7-alpine` does not include RedisJSON, so we use Redis Stack.
+    image: redis/redis-stack-server:latest
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
+  chromadb:
+    image: chromadb/chroma:latest
+    environment:
+      - IS_PERSISTENT=TRUE
+    ports:
+      - "8001:8000"
+    volumes:
+      - chroma_data:/chroma/chroma
+
+volumes:
+  redis_data:
+  chroma_data:

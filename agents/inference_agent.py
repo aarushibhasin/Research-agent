@@ -41,23 +41,41 @@ async def inference_agent(state: AgentState) -> AgentState:
                 ),
             ]
         )
-        msg = await llm.ainvoke(
-            prompt.format_messages(
-                conversation_history=history_block,
-                rewritten_query=state["rewritten_query"],
-                retrieval_context=state["retrieval_context"],
-            )
+        formatted_messages = prompt.format_messages(
+            conversation_history=history_block,
+            rewritten_query=state["rewritten_query"],
+            retrieval_context=state["retrieval_context"],
         )
-        state["t_inference_ms"] = (time.perf_counter() - start) * 1000
-        raw_content = getattr(msg, "content", None)
-        state["inference_msg_type"] = type(msg).__name__
-        if raw_content is None:
-            # Avoid crashing; capture a tiny hint for debugging.
-            state["inference_msg_repr"] = repr(msg)[:500]
-            state["answer"] = ""
+        first_token_ms = None
+        chunks: list[str] = []
+        msg_type = "AIMessageChunk"
+
+        async for chunk in llm.astream(formatted_messages):
+            if first_token_ms is None:
+                first_token_ms = (time.perf_counter() - start) * 1000
+            msg_type = type(chunk).__name__
+            content = getattr(chunk, "content", "")
+            if isinstance(content, str):
+                if content:
+                    chunks.append(content)
+            elif isinstance(content, list):
+                for part in content:
+                    if isinstance(part, str) and part:
+                        chunks.append(part)
+                    elif isinstance(part, dict):
+                        part_text = str(part.get("text", "")).strip()
+                        if part_text:
+                            chunks.append(part_text)
+
+        ttlt_ms = (time.perf_counter() - start) * 1000
+        state["t_time_to_first_token_ms"] = float(first_token_ms or ttlt_ms)
+        state["t_time_to_last_token_ms"] = ttlt_ms
+        state["t_inference_ms"] = ttlt_ms
+        state["inference_msg_type"] = msg_type
+        state["answer"] = "".join(chunks).strip()
+        if not state["answer"]:
             trace("Node3 inference -> empty", inference_msg_type=state["inference_msg_type"])
         else:
-            state["answer"] = str(raw_content) or ""
             trace(
                 "Node3 inference -> done",
                 inference_msg_type=state["inference_msg_type"],
@@ -66,6 +84,8 @@ async def inference_agent(state: AgentState) -> AgentState:
         return state
     except Exception as e:
         state["t_inference_ms"] = (time.perf_counter() - start) * 1000
+        state["t_time_to_first_token_ms"] = 0.0
+        state["t_time_to_last_token_ms"] = state["t_inference_ms"]
         state["answer"] = ""
         state["inference_error"] = repr(e)
         trace("Node3 inference -> error", error=repr(e))

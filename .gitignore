@@ -5,3 +5,27 @@ __pycache__/
 chroma_data/
 metrics_log.jsonl
 memory/__pycache__/
+
+# Local docs/artifacts
+*.pdf
+project plan.pdf
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual env + local env
+.venv/
+.env
+
+# OS/editor junk
+.DS_Store
+.vscode/
+.idea/
+
+# Logs/metrics
+metrics_log.jsonl

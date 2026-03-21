@@ -1,88 +1,30 @@
 # Memory Agent (LangGraph + Redis + Chroma)
 
-This project implements a 4-node memory/retrieval agent using **LangGraph**:
+Slim memory-agent flow for VM usage:
+1. Load HF dataset and ingest haystack sessions into Chroma (one-time).
+2. Run the 4-node agent on one dataset question.
+3. Print response + latency metrics + ground truth and log JSONL.
 
-1. **Intent**: rewrite/classify the user query
-2. **Retrieval**: semantic search in **ChromaDB** (papers/benchmark haystack chunks)
-3. **Inference**: call an LLM to answer using the retrieved context (and in-session chat history)
-4. **Memory store**: persist the turn to **Redis** (conversation history), so later turns can use it
+## What the system does
 
-It also includes:
-- A **one-time embedding/prebuild step** that writes benchmark haystack chunks into Chroma collections
-- A **single-query test script** that runs exactly one query against a prebuilt Chroma collection
-- A **full benchmark runner** (optionally using the prebuilt collections)
+The LangGraph pipeline is:
+- `intent` -> query rewrite/classification
+- `retrieval` -> Chroma semantic search over embedded haystack chunks
+- `inference` -> streamed LLM answer generation (TTFT/TTLT measured)
+- `memory_store` -> store turn in Redis conversation history
 
----
+Redis is also used for LangGraph checkpoints (state persistence by `thread_id`).
 
-## Architecture Overview
+## Repository layout
 
-The agent is a LangGraph `StateGraph` with state passed between nodes:
-- `AgentState` (see `agents/state.py`)
-
-### Nodes (in execution order)
-
-1. `agents/intent_agent.py`
-   - Produces:
-     - `rewritten_query`
-     - `query_type` (`factual|comparative|exploratory`)
-     - `keywords`
-2. `agents/retrieval_agent.py`
-   - Embeds the query (two-pass semantic retrieval using both `query` and `rewritten_query`)
-   - Queries the configured Chroma collection
-   - Produces:
-     - `retrieved_chunks`
-     - `retrieval_context` (formatted text snippets)
-3. `agents/inference_agent.py`
-   - Calls the configured LLM (vLLM-compatible or Azure OpenAI)
-   - Produces:
-     - `answer`
-4. `agents/memory_store_agent.py`
-   - Appends the turn to Redis conversation history as a Redis `LIST`
-   - Produces:
-     - updated `conversation_history`
-     - `stored_memory_id`
-
-LangGraph wiring:
-- `graph/pipeline.py`
-
----
-
-## Repository Layout
-
-Key folders/files:
-- `agents/`
-  - `state.py` — `AgentState` contract + defaults
-  - `intent_agent.py` — Node 1
-  - `retrieval_agent.py` — Node 2
-  - `inference_agent.py` — Node 3
-  - `memory_store_agent.py` — Node 4
-- `graph/pipeline.py` — builds the 4-node LangGraph pipeline (Redis checkpointer)
-- `memory/`
-  - `embedder.py` — lazy-loaded sentence-transformers embeddings
-  - `chroma_client.py` — Chroma HTTP client helpers
-  - `redis_history.py` — Redis LIST append helpers
-- `benchmark/`
-  - `loader.py` — loads `ai-hyz/MemoryAgentBench` and extracts haystack chunks
-  - `build_chroma.py` — one-time prebuild: embed + upsert haystack chunks into Chroma
-  - `runner.py` — benchmark evaluation runner (supports prebuilt mode)
-- `scripts/`
-  - `single_prebuilt_query_test.py` — runs exactly one prebuilt-query test (with optional node traces)
-  - `quick_benchmark_rag_test.py` — legacy debug smoke test (not required for normal usage)
-  - `inspect_benchmark_split.py` — checks how many non-empty examples exist in a split
-- `utils/`
-  - `llm_client.py` — creates the shared LLM client (vLLM vs Azure)
-  - `console_trace.py` — optional terminal tracing for each node
-- `main.py`
-  - CLI entry: `--mode repl` or `--mode benchmark`
-- `docker-compose.yml`
-  - Redis Stack (RedisJSON required by LangGraph checkpointing)
-  - ChromaDB
-
----
+- `agents/` - node implementations + `AgentState`
+- `graph/pipeline.py` - graph wiring + Redis checkpointer
+- `memory/` - Chroma client and embedding helpers
+- `benchmark/build_chroma.py` - one-time ingest to Chroma
+- `metrics/logger.py` - append-only JSONL logging
+- `main.py` - run one dataset query or all questions for one example
 
 ## Setup
-
-### 1) Python dependencies
 
 From `memory-agent/`:
 
@@ -90,133 +32,64 @@ From `memory-agent/`:
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
+cp .env.example .env
 ```
 
-### 2) Start infrastructure (Redis + Chroma)
-
-From the project root (where `docker-compose.yml` lives):
+Start infra:
 
 ```bash
 docker compose up -d
 ```
 
-### 3) Environment variables
+## One-time ingest: haystack -> embeddings -> Chroma
 
-Copy the template:
+Each non-empty dataset example is stored in its own collection:
+`{CHROMA_COLLECTION_PAPERS}__{split}__{example_id}`
 
-```bash
-cp .env.example .env
-```
-
-Important:
-- Do **not** commit `.env` (it is in `.gitignore`).
-- Update LLM + provider variables (`LLM_PROVIDER`, vLLM/Azure fields).
-- Update connection variables (`REDIS_URL`, `CHROMA_HOST`, `CHROMA_PORT`, etc.).
-
----
-
-## One-time: Build Chroma embeddings (prebuilt collections)
-
-The prebuild script:
-- Loads benchmark examples
-- Extracts haystack chunks
-- Embeds + upserts them into **per-example** Chroma collections
-
-Collection naming format:
-- `${CHROMA_COLLECTION_PAPERS}__${BENCHMARK_SPLIT}__${example_id}`
-
-Build the first 5 non-empty examples (recommended for quick iteration):
+Example:
 
 ```bash
 python benchmark/build_chroma.py --split Accurate_Retrieval --max-examples 5 --embed-batch-size 128
 ```
 
-Notes:
-- `--max-examples` counts **non-empty haystack examples** (skips empty ones).
-- This step is the expensive part; you typically do it once per dataset/split.
+Ingest the full split (all non-empty examples):
 
----
+```bash
+python benchmark/build_chroma.py --split Accurate_Retrieval --max-examples 0 --embed-batch-size 128
+```
 
-## Run a single query (prebuilt) with node-by-node logs
+## Run one dataset query with full metrics
 
-This script runs exactly one retrieval+inference call against a prebuilt Chroma collection.
-
-Random prebuilt example + random question:
+Random non-empty prebuilt example and random question:
 
 ```bash
 TOP_K_CHUNKS=10 \
-python scripts/single_prebuilt_query_test.py --split Accurate_Retrieval --trace
+python main.py --split Accurate_Retrieval --trace
 ```
 
-Pick a specific example/question:
+Specific example and question:
 
 ```bash
-TOP_K_CHUNKS=20 \
-python scripts/single_prebuilt_query_test.py --split Accurate_Retrieval --example-id 17 --question-index 40 --trace
+TOP_K_CHUNKS=10 \
+python main.py --split Accurate_Retrieval --example-id 18 --question-index 10 --trace
 ```
 
-What you get:
-- The printed `thread_id` (useful for LangSmith filtering)
-- Node steps (Intent / Retrieval / Inference / Redis write) when `--trace` is used
-- `retrieval_context` preview + timings
-
-To enable traces from any script, you can also set:
-- `AGENT_CONSOLE_TRACE=1`
-
----
-
-## Full benchmark (evaluation)
-
-### 1) Default (self-contained ingestion; slower)
+Run all questions for one example (each question gets its own `session_id`/`thread_id`):
 
 ```bash
-python main.py --mode benchmark --split Accurate_Retrieval
+TOP_K_CHUNKS=10 \
+python main.py --split Accurate_Retrieval --example-id 18 --all-questions --trace
 ```
 
-### 2) Fast benchmark using prebuilt Chroma collections
+Output includes:
+- query, predicted answer, ground truth
+- `T_time_to_first_token`, `T_time_to_last_token`
+- `T_chroma_retrieve`, `T_redis_store`
+- cumulative `T_chroma_retrieve_cumulative`, `T_redis_store_cumulative`
+- `(node, database)` latency breakdown entries
 
-```bash
-BENCHMARK_USE_PREBUILT_CHROMA=1 \
-python main.py --mode benchmark --split Accurate_Retrieval --max-examples 5
-```
+When `--all-questions` is used, metrics are still logged per question/session as separate JSONL entries.
 
-### Optional extra logging (useful when it looks “silent”)
+All runs are appended to `metrics_log.jsonl` (or `METRICS_LOG_PATH`).
 
-```bash
-BENCHMARK_LOG_EVERY=1 \
-BENCHMARK_USE_PREBUILT_CHROMA=1 \
-python main.py --mode benchmark --split Accurate_Retrieval --max-examples 5
-```
-
----
-
-## Redis conversation history (Node 4)
-
-Node 4 writes each turn to Redis as a LIST:
-- Key: `REDIS_CONV_PREFIX + session_id` (default prefix `conv:`)
-- Each element is a JSON object with:
-  - `query`, `answer`, `rewritten_query`, `query_type`, `keywords`, `timestamp`
-
-This same `session_id` is also used by LangGraph checkpointing (checkpoint saver).
-
----
-
-## LangSmith tracing (optional)
-
-Enable by setting in `.env`:
-- `LANGCHAIN_TRACING_V2=true`
-- `LANGCHAIN_API_KEY=...`
-- `LANGCHAIN_PROJECT=...`
-
-In this codebase, the benchmark and the scripts set `thread_id` in the run configuration. Use that `thread_id` to filter traces in the LangSmith UI.
-
----
-
-## Development Notes / Recommendations
-
-- For VM testing, prefer:
-  1. `benchmark/build_chroma.py` (prebuild once)
-  2. `scripts/single_prebuilt_query_test.py --trace` (fast iteration)
-- Tuning knob:
-  - `TOP_K_CHUNKS` controls retrieval depth; higher values improve recall but increase context length and inference time.
 

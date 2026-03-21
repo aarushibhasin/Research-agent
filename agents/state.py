@@ -34,6 +34,13 @@ class AgentState(TypedDict):
     t_inference_ms: float
     t_store_ms: float
     t_e2e_ms: float  # set by main.py wrapping the full ainvoke call
+    t_time_to_first_token_ms: float
+    t_time_to_last_token_ms: float
+    t_chroma_retrieve_ms: float
+    t_redis_store_ms: float
+    t_chroma_retrieve_total_ms: float
+    t_redis_store_total_ms: float
+    latency_breakdown: List[dict]
 
     # Debug / error propagation (kept in state so LangGraph doesn't drop them)
     retrieval_error: str
@@ -55,6 +62,20 @@ def ensure_state_defaults(state: MutableMapping[str, Any]) -> None:
         state["inference_error"] = ""
     if state.get("inference_msg_type") is None:
         state["inference_msg_type"] = ""
+    if state.get("t_time_to_first_token_ms") is None:
+        state["t_time_to_first_token_ms"] = 0.0
+    if state.get("t_time_to_last_token_ms") is None:
+        state["t_time_to_last_token_ms"] = 0.0
+    if state.get("t_chroma_retrieve_ms") is None:
+        state["t_chroma_retrieve_ms"] = 0.0
+    if state.get("t_redis_store_ms") is None:
+        state["t_redis_store_ms"] = 0.0
+    if state.get("t_chroma_retrieve_total_ms") is None:
+        state["t_chroma_retrieve_total_ms"] = 0.0
+    if state.get("t_redis_store_total_ms") is None:
+        state["t_redis_store_total_ms"] = 0.0
+    if state.get("latency_breakdown") is None:
+        state["latency_breakdown"] = []
 
 
 def default_state(query: str, session_id: str) -> AgentState:
@@ -75,6 +96,13 @@ def default_state(query: str, session_id: str) -> AgentState:
         "t_inference_ms": 0.0,
         "t_store_ms": 0.0,
         "t_e2e_ms": 0.0,
+        "t_time_to_first_token_ms": 0.0,
+        "t_time_to_last_token_ms": 0.0,
+        "t_chroma_retrieve_ms": 0.0,
+        "t_redis_store_ms": 0.0,
+        "t_chroma_retrieve_total_ms": 0.0,
+        "t_redis_store_total_ms": 0.0,
+        "latency_breakdown": [],
         "retrieval_error": "",
         "inference_error": "",
         "inference_msg_type": "",

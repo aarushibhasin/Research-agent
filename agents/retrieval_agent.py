@@ -44,6 +44,7 @@ def _build_chunks_from_chroma_result(result: dict) -> list[dict]:
 async def retrieval_agent(state: AgentState) -> AgentState:
     ensure_state_defaults(state)
     start = time.perf_counter()
+    chroma_total_ms = 0.0
     try:
         top_k = int(os.getenv("TOP_K_CHUNKS", "5"))
         collection_name = state.get("chroma_collection_name") or os.getenv(
@@ -72,11 +73,13 @@ async def retrieval_agent(state: AgentState) -> AgentState:
             if not q_text:
                 continue
             q_emb = embed_single(q_text)
+            chroma_start = time.perf_counter()
             result = chroma_client.query_collection(
                 collection_name=collection_name,
                 query_embedding=q_emb,
                 n_results=top_k,
             )
+            chroma_total_ms += (time.perf_counter() - chroma_start) * 1000
             for ch in _build_chunks_from_chroma_result(result):
                 doc_key = ch.get("id") or (ch.get("document") or "")[:80]
                 prev = merged_by_key.get(doc_key)
@@ -96,6 +99,11 @@ async def retrieval_agent(state: AgentState) -> AgentState:
             )
 
         state["t_retrieval_ms"] = (time.perf_counter() - start) * 1000
+        state["t_chroma_retrieve_ms"] = chroma_total_ms
+        state["t_chroma_retrieve_total_ms"] = float(state.get("t_chroma_retrieve_total_ms") or 0.0) + chroma_total_ms
+        state["latency_breakdown"] = list(state.get("latency_breakdown") or []) + [
+            {"node": "retrieval", "database": "chroma", "metric": "retrieve", "ms": chroma_total_ms}
+        ]
         state["retrieved_chunks"] = merged_chunks
         state["retrieval_context"] = "\n".join(lines)
 
@@ -110,6 +118,11 @@ async def retrieval_agent(state: AgentState) -> AgentState:
         return state
     except Exception as e:
         state["t_retrieval_ms"] = (time.perf_counter() - start) * 1000
+        state["t_chroma_retrieve_ms"] = chroma_total_ms
+        state["t_chroma_retrieve_total_ms"] = float(state.get("t_chroma_retrieve_total_ms") or 0.0) + chroma_total_ms
+        state["latency_breakdown"] = list(state.get("latency_breakdown") or []) + [
+            {"node": "retrieval", "database": "chroma", "metric": "retrieve", "ms": chroma_total_ms}
+        ]
         state["retrieved_chunks"] = []
         state["retrieval_context"] = ""
         state["retrieval_error"] = repr(e)
